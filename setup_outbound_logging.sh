@@ -3,7 +3,7 @@
 # setup_outbound_logging.sh
 # 
 # Sets up comprehensive outbound connection logging on Rocky Linux (firewalld)
-# Purpose: Audit all outbound connections (allowed AND blocked) from hoppers
+# Purpose: Audit all outbound connections (allowed AND blocked) from servers
 #          to detect undocumented LLM network activity.
 #
 # What this script does:
