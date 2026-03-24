@@ -9,25 +9,25 @@ setup_outbound_logging.sh and surfaces the interesting stuff:
 
 Usage:
     # Analyze today's logs (default)
-    sudo python3 outbound_audit.py
+    sudo python outbound_audit.py
 
     # Analyze a specific log file
-    sudo python3 outbound_audit.py -f /var/log/outbound-connections.log
+    sudo python outbound_audit.py -f /var/log/outbound-connections.log
 
     # Only show Ollama's outbound activity
-    sudo python3 outbound_audit.py --ollama-only
+    sudo python outbound_audit.py --ollama-only
 
     # Analyze last 24 hours and flag anything new vs. a known-good baseline
-    sudo python3 outbound_audit.py --baseline /etc/outbound-baseline.json
+    sudo python outbound_audit.py --baseline /etc/outbound-baseline.json
 
     # Generate a baseline from current logs (run this once things look "normal")
-    sudo python3 outbound_audit.py --save-baseline /etc/outbound-baseline.json
+    sudo python outbound_audit.py --save-baseline /etc/outbound-baseline.json
 
     # Filter to a time window
-    sudo python3 outbound_audit.py --after "2025-03-20 08:00" --before "2025-03-20 17:00"
+    sudo python outbound_audit.py --after "2025-03-20 08:00" --before "2025-03-20 17:00"
 
     # Show top 20 instead of default top 10
-    sudo python3 outbound_audit.py -n 20
+    sudo python outbound_audit.py -n 20
 """
 
 import argparse
@@ -102,7 +102,7 @@ def parse_syslog_timestamp(ts_str: str, year: int = None) -> datetime:
         return None
 
 
-def parse_log_line(line: str) -> dict | None:
+def parse_log_line(line: str):
     """Parse a single log line into a structured dict."""
     m = LOG_PATTERN.match(line.strip())
     if not m:
@@ -130,7 +130,7 @@ def parse_log_line(line: str) -> dict | None:
     return entry
 
 
-def read_log_file(path: str) -> list[dict]:
+def read_log_file(path: str):
     """Read and parse an entire log file."""
     entries = []
     try:
@@ -190,7 +190,7 @@ def print_section(title: str):
     print(f"\n{C.BOLD}{C.YELLOW}── {title} {'─' * (74 - len(title))}{C.RESET}")
 
 
-def print_table(headers: list[str], rows: list[list[str]], col_widths: list[int] = None):
+def print_table(headers, rows, col_widths=None):
     """Print a simple aligned table."""
     if not rows:
         print(f"  {C.DIM}(none){C.RESET}")
@@ -232,7 +232,7 @@ def port_label(port: int) -> str:
     return str(port)
 
 
-def print_summary_report(entries: list[dict], top_n: int, resolve: bool):
+def print_summary_report(entries, top_n, resolve):
     """Print the summary report with top destinations, ports, etc."""
     print_header("OUTBOUND CONNECTION SUMMARY REPORT")
 
@@ -312,7 +312,7 @@ def print_summary_report(entries: list[dict], top_n: int, resolve: bool):
     print_table(["Protocol", "Count"], rows)
 
 
-def print_ollama_report(entries: list[dict], resolve: bool):
+def print_ollama_report(entries, resolve):
     """Dedicated section for Ollama activity — the main reason we're here."""
     ollama = [e for e in entries if e["is_ollama"]]
 
@@ -348,7 +348,7 @@ def print_ollama_report(entries: list[dict], resolve: bool):
     print(f"      -m owner --uid-owner ollama -j REJECT")
 
 
-def print_anomaly_report(entries: list[dict], baseline: dict | None, resolve: bool):
+def print_anomaly_report(entries, baseline, resolve):
     """Flag unusual or first-seen activity."""
     print_header("ANOMALY DETECTION")
 
@@ -465,7 +465,7 @@ def print_anomaly_report(entries: list[dict], baseline: dict | None, resolve: bo
 # Baseline management
 # =============================================================================
 
-def save_baseline(entries: list[dict], path: str):
+def save_baseline(entries, path):
     """Save current traffic patterns as a known-good baseline."""
     destinations = list(set(e["dst"] for e in entries))
     dst_ports = list(set((e["dst"], e["dpt"]) for e in entries if e["dpt"] > 0))
@@ -486,7 +486,7 @@ def save_baseline(entries: list[dict], path: str):
     print(f"  Use with: outbound_audit.py --baseline {path}")
 
 
-def load_baseline(path: str) -> dict | None:
+def load_baseline(path: str):
     """Load a previously saved baseline."""
     if not path:
         return None
@@ -515,11 +515,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  sudo python3 outbound_audit.py                          # Analyze default log
-  sudo python3 outbound_audit.py --ollama-only             # Just Ollama activity
-  sudo python3 outbound_audit.py --save-baseline base.json # Snapshot current traffic
-  sudo python3 outbound_audit.py --baseline base.json      # Compare against baseline
-  sudo python3 outbound_audit.py --after "2025-03-20 08:00" --before "2025-03-20 17:00"
+  sudo python outbound_audit.py                          # Analyze default log
+  sudo python outbound_audit.py --ollama-only             # Just Ollama activity
+  sudo python outbound_audit.py --save-baseline base.json # Snapshot current traffic
+  sudo python outbound_audit.py --baseline base.json      # Compare against baseline
+  sudo python outbound_audit.py --after "2025-03-20 08:00" --before "2025-03-20 17:00"
         """,
     )
     parser.add_argument("-f", "--file", default="/var/log/outbound-connections.log",

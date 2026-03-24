@@ -34,6 +34,10 @@ BLOCKED_PREFIX="OUTBOUND_BLOCKED"
 INSTALL_CONNTRACK=false
 CONNTRACK_SERVICE_NAME="conntrack-logger"
 
+# Ollama — skip logging local inference calls, but DO log Ollama's own outbound
+OLLAMA_PORT=11434
+OLLAMA_USER="ollama"   # user that the ollama service runs as (check: ps -o user= -p $(pgrep ollama))
+
 # Parse args
 for arg in "$@"; do
     case "$arg" in
@@ -81,43 +85,90 @@ firewall-cmd --permanent --zone="$ACTIVE_ZONE" \
     --add-rich-rule='rule family="ipv4" source address="0.0.0.0/0" log prefix="'"$LOG_PREFIX"' " level="info" limit value="100/m"' \
     2>/dev/null || true
 
-# For more granular control: log new outbound TCP specifically
 # These rules use direct rules to hook into the OUTPUT chain
+# Rule priority (lower = evaluated first):
+#   0 = skip local Ollama traffic (no log, just return)
+#   1 = log Ollama process making outbound connections (important!)
+#   2 = log all other outbound connections
 echo "    Adding direct rules for OUTPUT chain logging..."
 
-# Log new outbound TCP connections (SYN packets = connection initiation)
+# --- Priority 0: SKIP local traffic TO Ollama (noisy inference calls) --------
+# Anything hitting localhost:11434 is just apps calling the local LLM — not interesting
 firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 \
+    -p tcp -d 127.0.0.1 --dport "$OLLAMA_PORT" \
+    -j RETURN \
+    2>/dev/null || true
+
+# Also skip loopback responses FROM Ollama back to local clients
+firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 \
+    -p tcp -s 127.0.0.1 --sport "$OLLAMA_PORT" \
+    -j RETURN \
+    2>/dev/null || true
+
+# --- Priority 1: LOG Ollama's own outbound connections (the important ones) --
+# If the ollama process itself reaches out to the internet, we DEFINITELY want to know
+# Detect the ollama user; fall back if not found
+if id "$OLLAMA_USER" &>/dev/null; then
+    echo "    Detected ollama user: $OLLAMA_USER (UID $(id -u "$OLLAMA_USER"))"
+
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 1 \
+        -p tcp --tcp-flags SYN,ACK,FIN,RST SYN \
+        -m state --state NEW \
+        -m owner --uid-owner "$OLLAMA_USER" \
+        -j LOG --log-prefix "OLLAMA_OUTBOUND_TCP: " --log-level 4 \
+        2>/dev/null || true
+
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 1 \
+        -p udp \
+        -m state --state NEW \
+        -m owner --uid-owner "$OLLAMA_USER" \
+        -j LOG --log-prefix "OLLAMA_OUTBOUND_UDP: " --log-level 4 \
+        2>/dev/null || true
+
+    firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 1 \
+        -p tcp --tcp-flags SYN,ACK,FIN,RST SYN \
+        -m state --state NEW \
+        -m owner --uid-owner "$OLLAMA_USER" \
+        -j LOG --log-prefix "OLLAMA_OUTBOUND_TCP6: " --log-level 4 \
+        2>/dev/null || true
+else
+    echo "    WARNING: User '$OLLAMA_USER' not found. Ollama-specific rules skipped."
+    echo "    Check who runs Ollama:  ps -o user= -p \$(pgrep ollama)"
+    echo "    Then update OLLAMA_USER at the top of this script and re-run."
+fi
+
+# --- Priority 2: LOG all other new outbound connections ----------------------
+# TCP (SYN = new connection initiation)
+firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 2 \
     -p tcp --tcp-flags SYN,ACK,FIN,RST SYN \
     -m state --state NEW \
     -j LOG --log-prefix "${LOG_PREFIX}_TCP: " --log-level 4 \
     2>/dev/null || true
 
-# Log new outbound UDP connections
-firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 \
+# UDP
+firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 2 \
     -p udp \
     -m state --state NEW \
     -j LOG --log-prefix "${LOG_PREFIX}_UDP: " --log-level 4 \
     2>/dev/null || true
 
-# Log BLOCKED outbound attempts (if any reject/drop rules exist)
-# This catches anything that gets rejected in the OUTPUT chain
-firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 999 \
-    -m state --state NEW \
-    -m mark --mark 0xDEAD \
-    -j LOG --log-prefix "${BLOCKED_PREFIX}: " --log-level 4 \
-    2>/dev/null || true
-
 # IPv6 equivalents
-firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 0 \
+firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 2 \
     -p tcp --tcp-flags SYN,ACK,FIN,RST SYN \
     -m state --state NEW \
     -j LOG --log-prefix "${LOG_PREFIX}_TCP6: " --log-level 4 \
     2>/dev/null || true
 
-firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 0 \
+firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 2 \
     -p udp \
     -m state --state NEW \
     -j LOG --log-prefix "${LOG_PREFIX}_UDP6: " --log-level 4 \
+    2>/dev/null || true
+
+# --- Priority 999: LOG blocked outbound attempts ----------------------------
+firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 999 \
+    -m state --state NEW \
+    -j LOG --log-prefix "${BLOCKED_PREFIX}: " --log-level 4 \
     2>/dev/null || true
 
 # Reload to apply
@@ -129,14 +180,17 @@ echo "[3/5] Configuring rsyslog to route outbound logs to $LOG_FILE..."
 
 cat > /etc/rsyslog.d/10-outbound-connections.conf << 'RSYSLOG_EOF'
 # Route outbound connection logs to a dedicated file
-# Matches both allowed (OUTBOUND_CONN) and blocked (OUTBOUND_BLOCKED) entries
+# Matches allowed (OUTBOUND_CONN), blocked (OUTBOUND_BLOCKED),
+# and Ollama-specific (OLLAMA_OUTBOUND) entries
 :msg, contains, "OUTBOUND_CONN"    -/var/log/outbound-connections.log
 :msg, contains, "OUTBOUND_BLOCKED" -/var/log/outbound-connections.log
+:msg, contains, "OLLAMA_OUTBOUND"  -/var/log/outbound-connections.log
 
 # Optional: stop processing these messages so they don't also flood /var/log/messages
-# Uncomment the next two lines if you want ONLY the dedicated file:
+# Uncomment the lines below if you want ONLY the dedicated file:
 # :msg, contains, "OUTBOUND_CONN"    stop
 # :msg, contains, "OUTBOUND_BLOCKED" stop
+# :msg, contains, "OLLAMA_OUTBOUND"  stop
 RSYSLOG_EOF
 
 # Create the log file with proper permissions
@@ -251,9 +305,18 @@ fi
 echo ""
 echo " Log format (firewalld):"
 echo '   OUTBOUND_CONN_TCP: ... SRC=10.0.0.5 DST=104.18.32.7 DPT=443 ...'
+echo '   OLLAMA_OUTBOUND_TCP: ... DST=<ip> DPT=<port> ...  <-- Ollama phoning home!'
 echo ""
 echo " What to grep for when auditing LLM activity:"
+echo '   # === THE IMPORTANT ONE: Is Ollama calling out? ==='
+echo '   grep "OLLAMA_OUTBOUND" /var/log/outbound-connections.log'
+echo ""
+echo '   # General outbound auditing'
 echo '   grep "DPT=443" /var/log/outbound-connections.log   # HTTPS calls'
 echo '   grep "DPT=80"  /var/log/outbound-connections.log   # HTTP calls'
 echo '   # Look for unexpected DST IPs or unusual ports'
+echo ""
+echo " NOTE: Local traffic to Ollama (localhost:$OLLAMA_PORT) is excluded"
+echo "       from logging to reduce noise. Only Ollama's OWN outbound"
+echo "       connections to external hosts are logged."
 echo ""
