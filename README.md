@@ -1,4 +1,4 @@
-# Grace Hopper Egress Monitor
+# Egress Monitor
 
 Outbound egress monitor for Rocky Linux servers — firewalld logging setup + Python log parser with anomaly detection for Ollama LLM hosts.
 
