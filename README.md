@@ -60,32 +60,32 @@ curl -s https://example.com > /dev/null   # should generate an entry
 
 ```bash
 # Analyze today's logs
-sudo python3 outbound_audit.py
+sudo python outbound_audit.py
 
 # Only show Ollama's outbound activity
-sudo python3 outbound_audit.py --ollama-only
+sudo python outbound_audit.py --ollama-only
 
 # Analyze a specific log file
-sudo python3 outbound_audit.py -f /var/log/outbound-connections.log
+sudo python outbound_audit.py -f /var/log/outbound-connections.log
 
 # Filter to a time window
-sudo python3 outbound_audit.py --after "2025-03-20 08:00" --before "2025-03-20 17:00"
+sudo python outbound_audit.py --after "2025-03-20 08:00" --before "2025-03-20 17:00"
 
 # Show top 20 results instead of default 10
-sudo python3 outbound_audit.py -n 20
+sudo python outbound_audit.py -n 20
 
 # Skip reverse DNS lookups (faster)
-sudo python3 outbound_audit.py --no-resolve
+sudo python outbound_audit.py --no-resolve
 ```
 
 **Baseline comparison — detect new activity over time:**
 
 ```bash
 # Save a snapshot of current "normal" traffic
-sudo python3 outbound_audit.py --save-baseline /etc/outbound-baseline.json
+sudo python outbound_audit.py --save-baseline /etc/outbound-baseline.json
 
 # Later, compare against it to flag anything new
-sudo python3 outbound_audit.py --baseline /etc/outbound-baseline.json
+sudo python outbound_audit.py --baseline /etc/outbound-baseline.json
 ```
 
 **To remove all outbound logging rules:**
@@ -98,4 +98,6 @@ rm -f /etc/rsyslog.d/10-outbound-connections.conf
 systemctl restart rsyslog
 ```
 
-**Requirements:** Rocky Linux with firewalld running. Python 3.10+ (stdlib only). Root access for setup and log reads.
+**Requirements:** Rocky Linux with firewalld running. Python 3.9+ (stdlib only). Root access for setup and log reads.
+
+<br>

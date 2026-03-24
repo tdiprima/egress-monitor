@@ -1,7 +1,7 @@
 [project]
-name = "hopper-egress-monitor"
+name = "egress-monitor"
 version = "0.1.0"
-description = "Logging all outbound connections from a Grace Hopper server."
+description = "Logging outbound connections"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.9"
 dependencies = []
