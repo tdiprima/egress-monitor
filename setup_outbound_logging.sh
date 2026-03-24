@@ -76,6 +76,12 @@ echo ""
 ACTIVE_ZONE=$(firewall-cmd --get-default-zone)
 echo "[1/5] Active firewalld zone: $ACTIVE_ZONE"
 
+# --- Step 1.5: Clean up any previous outbound logging rules ------------------
+# Safe to re-run — removes old rules before adding updated ones
+echo "       Clearing any previous outbound logging direct rules..."
+firewall-cmd --permanent --direct --remove-rules ipv4 filter OUTPUT 2>/dev/null || true
+firewall-cmd --permanent --direct --remove-rules ipv6 filter OUTPUT 2>/dev/null || true
+
 # --- Step 2: Add rich rules for outbound logging -----------------------------
 echo "[2/5] Adding firewalld rich rules for outbound logging..."
 
@@ -87,21 +93,35 @@ firewall-cmd --permanent --zone="$ACTIVE_ZONE" \
 
 # These rules use direct rules to hook into the OUTPUT chain
 # Rule priority (lower = evaluated first):
-#   0 = skip local Ollama traffic (no log, just return)
+#   0 = skip ALL loopback/localhost traffic (noisy, not interesting)
 #   1 = log Ollama process making outbound connections (important!)
 #   2 = log all other outbound connections
 echo "    Adding direct rules for OUTPUT chain logging..."
 
-# --- Priority 0: SKIP local traffic TO Ollama (noisy inference calls) --------
-# Anything hitting localhost:11434 is just apps calling the local LLM — not interesting
+# --- Priority 0: SKIP all loopback traffic -----------------------------------
+# localhost-to-localhost is just local services talking (Jupyter, dev servers,
+# Ollama inference calls, etc.) — not what we're auditing.
+# We only care about traffic leaving the machine.
+
+# IPv4 loopback (127.0.0.0/8)
 firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 \
-    -p tcp -d 127.0.0.1 --dport "$OLLAMA_PORT" \
+    -o lo \
     -j RETURN \
     2>/dev/null || true
 
-# Also skip loopback responses FROM Ollama back to local clients
 firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 \
-    -p tcp -s 127.0.0.1 --sport "$OLLAMA_PORT" \
+    -d 127.0.0.0/8 \
+    -j RETURN \
+    2>/dev/null || true
+
+# IPv6 loopback (::1)
+firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 0 \
+    -o lo \
+    -j RETURN \
+    2>/dev/null || true
+
+firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 0 \
+    -d ::1/128 \
     -j RETURN \
     2>/dev/null || true
 
