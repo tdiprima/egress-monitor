@@ -32,14 +32,12 @@ Usage:
 
 import argparse
 import json
-import os
 import re
 import socket
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timedelta
 from functools import lru_cache
-from pathlib import Path
 
 # =============================================================================
 # Color helpers — no dependencies needed
@@ -141,11 +139,11 @@ def read_log_file(path: str):
                     entries.append(entry)
     except FileNotFoundError:
         print(f"{C.RED}ERROR:{C.RESET} Log file not found: {path}")
-        print(f"  Has setup_outbound_logging.sh been run yet?")
+        print("  Has setup_outbound_logging.sh been run yet?")
         sys.exit(1)
     except PermissionError:
         print(f"{C.RED}ERROR:{C.RESET} Permission denied: {path}")
-        print(f"  Try running with sudo.")
+        print("  Try running with sudo.")
         sys.exit(1)
     return entries
 
@@ -342,10 +340,10 @@ def print_ollama_report(entries, resolve):
     print_table(["Destination", "Port", "Count", "First Seen", "Last Seen"], rows)
 
     print(f"\n  {C.YELLOW}Action items:{C.RESET}")
-    print(f"  • Investigate what Ollama is reaching out to")
-    print(f"  • Check if OLLAMA_HOST or model pull configs are set")
-    print(f"  • Consider blocking with: firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 \\")
-    print(f"      -m owner --uid-owner ollama -j REJECT")
+    print("  • Investigate what Ollama is reaching out to")
+    print("  • Check if OLLAMA_HOST or model pull configs are set")
+    print("  • Consider blocking with: firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 \\")
+    print("      -m owner --uid-owner ollama -j REJECT")
 
 
 def print_anomaly_report(entries, baseline, resolve):
