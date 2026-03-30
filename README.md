@@ -1,103 +1,120 @@
-# Egress Monitor
+# egress-monitor
 
-Outbound egress monitor for Rocky Linux servers — firewalld logging setup + Python log parser with anomaly detection for Ollama LLM hosts.
+Monitor all outbound network connections on a Rocky Linux server and get email alerts when something unexpected phones home — especially Ollama.
 
-## When You Don't Know What Your LLMs Are Calling Home To
+## Why This Exists
 
-Running Ollama on a shared server means trusting that the LLM process behaves. But does it? Firewalld permits outbound traffic by default and logs nothing. Without visibility into outbound connections, you have no way to know whether Ollama — or anything else on the server — is reaching out to unexpected destinations, on unusual ports, or at unusual times.
+You're running an LLM inference server (Ollama) and you want to know if it ever makes outbound connections it shouldn't. More broadly, you want a daily record of everything your server calls out to, and an alert when something new shows up.
 
-## What This Toolkit Does
+## How It Works
 
-A two-part setup: a bash script that instruments firewalld to log every new outbound TCP/UDP connection (allowed and blocked), and a Python script that parses those logs and surfaces anything worth investigating.
+1. Firewalld logs every outbound TCP/UDP connection to `/var/log/outbound-connections.log`
+2. You let logs accumulate for a day or two, then snapshot a **baseline** (what "normal" looks like)
+3. A cron job runs every night, compares that day's traffic against your baseline, and emails you only if something new or suspicious appeared
 
-The setup script adds direct iptables rules to firewalld's OUTPUT chain, routes the kernel log messages to a dedicated file via rsyslog, and configures logrotate so logs don't fill the disk. Optionally, it installs `conntrack` for structured connection tracking via a systemd service.
+No alerts on quiet nights. Alerts when Ollama dials out, a new IP appears, or a blocked connection is attempted.
 
-The audit script reads the log file, parses each kernel log line, and produces three reports:
+## Full Setup: Do This Once
 
-- **Summary** — top destinations, ports, source hosts, hourly distribution, protocol breakdown
-- **Ollama activity** — dedicated section that flags any connection initiated by the Ollama process, with first/last seen timestamps and suggested firewall block commands
-- **Anomaly detection** — flags unusual ports, blocked outbound attempts, and (with a baseline) any destination or port combination never seen before
-
-## Example Output
-
-```
-════════════════════════════════════════════════════════════════════════════════
-  OLLAMA OUTBOUND ACTIVITY
-════════════════════════════════════════════════════════════════════════════════
-
-  ⚠  OLLAMA MADE 3 OUTBOUND CONNECTION(S)
-
-  Destination               Port     Count  First Seen   Last Seen
-  ──────────────────────────────────────────────────────────────────
-  ollama.ai (104.21.8.42)   443/HTTPS  3    03-20 09:14  03-20 11:02
-
-  Action items:
-  • Investigate what Ollama is reaching out to
-  • Check if OLLAMA_HOST or model pull configs are set
-  • Consider blocking with: firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 \
-      -m owner --uid-owner ollama -j REJECT
-```
-
-## Usage
-
-**Step 1 — Set up logging on the server (run once, requires root):**
+### Step 1 — Enable firewall logging
 
 ```bash
-sudo bash setup_outbound_logging.sh
-
-# With conntrack for structured connection tracking:
-sudo bash setup_outbound_logging.sh --with-conntrack
+sudo bash src/setup_outbound_logging.sh
 ```
 
-Logs are written to `/var/log/outbound-connections.log`. Verify it's working:
+This configures firewalld and rsyslog to write all outbound connections to `/var/log/outbound-connections.log`. It also sets up daily log rotation.
+
+Verify it's working:
 
 ```bash
-tail -f /var/log/outbound-connections.log
-curl -s https://example.com > /dev/null   # should generate an entry
+sudo tail -f /var/log/outbound-connections.log
 ```
 
-**Step 2 — Analyze the logs:**
+You should see lines like:
+
+```
+Mar 20 14:23:01 server1 kernel: OUTBOUND_CONN_TCP: IN= OUT=eth0 SRC=10.0.0.5 DST=104.18.32.7 DPT=443 ...
+```
+
+### Step 2 — Wait 1 to 2 days
+
+**Do not skip this.** Let your server run normally so the log fills up with real traffic. The baseline you create in the next step is only useful if it reflects actual normal activity.
+
+### Step 3 — Create a baseline
 
 ```bash
-# Analyze today's logs
-sudo python outbound_audit.py
-
-# Only show Ollama's outbound activity
-sudo python outbound_audit.py --ollama-only
-
-# Analyze a specific log file
-sudo python outbound_audit.py -f /var/log/outbound-connections.log
-
-# Filter to a time window
-sudo python outbound_audit.py --after "2025-03-20 08:00" --before "2025-03-20 17:00"
-
-# Show top 20 results instead of default 10
-sudo python outbound_audit.py -n 20
-
-# Skip reverse DNS lookups (faster)
-sudo python outbound_audit.py --no-resolve
+sudo python3 src/outbound_audit.py --save-baseline /etc/outbound-baseline.json
 ```
 
-**Baseline comparison — detect new activity over time:**
+This snapshots every known destination IP and port. Future audits flag anything not in this file.
+
+### Step 4 — Install the scripts
 
 ```bash
-# Save a snapshot of current "normal" traffic
-sudo python outbound_audit.py --save-baseline /etc/outbound-baseline.json
-
-# Later, compare against it to flag anything new
-sudo python outbound_audit.py --baseline /etc/outbound-baseline.json
+sudo cp src/outbound_audit.py /usr/local/bin/
+sudo cp src/outbound_audit_cron.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/outbound_audit_cron.sh
 ```
 
-**To remove all outbound logging rules:**
+### Step 5 — Set your alert email
 
 ```bash
-firewall-cmd --permanent --direct --remove-rules ipv4 filter OUTPUT
-firewall-cmd --permanent --direct --remove-rules ipv6 filter OUTPUT
-firewall-cmd --reload
-rm -f /etc/rsyslog.d/10-outbound-connections.conf
-systemctl restart rsyslog
+export EMAIL="you@example.com"
 ```
 
-**Requirements:** Rocky Linux with firewalld running. Python 3.9+ (stdlib only). Root access for setup and log reads.
+Add this to `/etc/environment` or your cron environment so it persists across reboots.
+
+### Step 6 — Schedule the nightly job
+
+```bash
+sudo crontab -e
+```
+
+Add this line:
+
+```
+0 0 * * * EMAIL=you@example.com /usr/local/bin/outbound_audit_cron.sh
+```
+
+This runs the audit every night at midnight, checks yesterday's traffic against your baseline, writes a report to `/var/log/outbound-audit-reports/`, and emails you only if something is wrong.
+
+## That's It
+
+After setup, you don't have to do anything. Check your inbox. If Ollama phones home, you'll know.
+
+## Running It Manually
+
+```bash
+# Full report for today
+sudo python3 /usr/local/bin/outbound_audit.py
+
+# Only show Ollama activity
+sudo python3 /usr/local/bin/outbound_audit.py --ollama-only
+
+# Analyze a specific time window
+sudo python3 /usr/local/bin/outbound_audit.py --after "2025-03-20 08:00" --before "2025-03-20 17:00"
+
+# Compare against your baseline
+sudo python3 /usr/local/bin/outbound_audit.py --baseline /etc/outbound-baseline.json
+```
+
+## What the Alerts Mean
+
+| Severity | What It Means |
+|----------|---------------|
+| CRITICAL | Ollama made an outbound connection |
+| HIGH | A new destination IP appeared, or a connection was blocked |
+| MEDIUM | Known destination but a new port |
+| LOW | Informational only |
+
+## Requirements
+
+- Rocky Linux (or any RHEL-compatible distro)
+- `firewalld` running
+- `rsyslog` running
+- Python 3.9+
+- `mailx` for email alerts — on RHEL/Rocky: `sudo dnf install s-nail -y`
+
+<!-- `mail`, `mailx`, or `sendmail` for email alerts -->
 
 <br>
