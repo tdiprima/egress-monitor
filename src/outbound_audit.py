@@ -31,6 +31,7 @@ Usage:
 """
 
 import argparse
+import ipaddress
 import json
 import re
 import socket
@@ -400,11 +401,18 @@ def print_anomaly_report(entries, baseline, resolve):
         known_dst_ports = set(
             tuple(x) for x in baseline.get("known_destination_ports", [])
         )
+        known_networks = _parse_known_networks(baseline)
         current_dsts = set(e["dst"] for e in entries)
         current_dst_ports = set((e["dst"], e["dpt"]) for e in entries if e["dpt"] > 0)
 
-        new_dsts = current_dsts - known_dsts
-        new_dst_ports = current_dst_ports - known_dst_ports
+        new_dsts = {
+            ip for ip in (current_dsts - known_dsts)
+            if not _ip_in_known_network(ip, known_networks)
+        }
+        new_dst_ports = {
+            (ip, port) for ip, port in (current_dst_ports - known_dst_ports)
+            if not _ip_in_known_network(ip, known_networks)
+        }
 
         for ip in new_dsts:
             count = sum(1 for e in entries if e["dst"] == ip)
@@ -462,6 +470,26 @@ def print_anomaly_report(entries, baseline, resolve):
 # =============================================================================
 # Baseline management
 # =============================================================================
+
+def _parse_known_networks(baseline):
+    """Return list of ip_network objects from baseline's known_networks field."""
+    networks = []
+    for cidr in baseline.get("known_networks", []):
+        try:
+            networks.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            pass
+    return networks
+
+
+def _ip_in_known_network(ip_str, networks):
+    """Return True if ip_str falls within any of the given networks."""
+    try:
+        addr = ipaddress.ip_address(ip_str)
+        return any(addr in net for net in networks)
+    except ValueError:
+        return False
+
 
 def save_baseline(entries, path):
     """Save current traffic patterns as a known-good baseline."""
