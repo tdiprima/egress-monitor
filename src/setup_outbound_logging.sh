@@ -98,10 +98,9 @@ firewall-cmd --permanent --zone="$ACTIVE_ZONE" \
 #   2 = log all other outbound connections
 echo "    Adding direct rules for OUTPUT chain logging..."
 
-# --- Priority 0: SKIP all loopback traffic -----------------------------------
-# localhost-to-localhost is just local services talking (Jupyter, dev servers,
-# Ollama inference calls, etc.) — not what we're auditing.
-# We only care about traffic leaving the machine.
+# --- Priority 0: SKIP internal-only interfaces ------------------------------
+# Traffic on loopback and Docker bridge interfaces never leaves the machine.
+# Log only traffic going out a real external interface.
 
 # IPv4 loopback (127.0.0.0/8)
 firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 \
@@ -122,6 +121,25 @@ firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 0 \
 
 firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 0 \
     -d ::1/128 \
+    -j RETURN \
+    2>/dev/null || true
+
+# Docker bridge interfaces — host-to-container traffic, never leaves machine.
+# docker+ covers docker0, docker1, etc.
+# br+ covers custom Docker network bridges (br-xxxxxxxx).
+# veth+ covers veth pairs used by individual containers.
+firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 \
+    -o docker+ \
+    -j RETURN \
+    2>/dev/null || true
+
+firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 \
+    -o br+ \
+    -j RETURN \
+    2>/dev/null || true
+
+firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 \
+    -o veth+ \
     -j RETURN \
     2>/dev/null || true
 

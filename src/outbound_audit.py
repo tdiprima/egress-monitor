@@ -129,14 +129,19 @@ def parse_log_line(line: str):
     return entry
 
 
+def _is_internal_iface(iface: str) -> bool:
+    """Return True for interfaces whose traffic never leaves the machine."""
+    return iface in ("lo",) or iface.startswith(("docker", "br-", "veth"))
+
+
 def read_log_file(path: str):
-    """Read and parse an entire log file."""
+    """Read and parse an entire log file, dropping internal-interface traffic."""
     entries = []
     try:
         with open(path, "r") as f:
             for line in f:
                 entry = parse_log_line(line)
-                if entry and entry["timestamp"]:
+                if entry and entry["timestamp"] and not _is_internal_iface(entry["out_iface"]):
                     entries.append(entry)
     except FileNotFoundError:
         print(f"{C.RED}ERROR:{C.RESET} Log file not found: {path}")
