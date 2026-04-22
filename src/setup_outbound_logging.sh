@@ -185,7 +185,21 @@ firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 2 \
     -j LOG --log-prefix "${LOG_PREFIX}_UDP6: " --log-level 4 \
     2>/dev/null || true
 
-# --- Priority 999: LOG blocked outbound attempts ----------------------------
+# --- Priority 3: RETURN from direct chain after logging ---------------------
+# iptables LOG is non-terminating: a packet logged at priority 2 would fall
+# through to priority 999 and get double-logged as OUTBOUND_BLOCKED even though
+# the connection is allowed. RETURN here exits the direct chain cleanly.
+firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 3 \
+    -j RETURN \
+    2>/dev/null || true
+
+firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 3 \
+    -j RETURN \
+    2>/dev/null || true
+
+# --- Priority 999: LOG outbound attempts that bypassed all prior rules -------
+# With the RETURN at priority 3, only traffic that doesn't match priorities
+# 0–2 reaches here (non-SYN TCP, non-NEW UDP, unusual protocols).
 firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 999 \
     -m state --state NEW \
     -j LOG --log-prefix "${BLOCKED_PREFIX}: " --log-level 4 \

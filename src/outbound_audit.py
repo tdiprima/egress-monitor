@@ -241,8 +241,15 @@ def print_summary_report(entries, top_n, resolve):
         return
 
     ollama_entries = [e for e in entries if e["is_ollama"]]
-    blocked_entries = [e for e in entries if e["is_blocked"]]
     allowed_entries = [e for e in entries if not e["is_blocked"]]
+    allowed_dst_ports = set((e["dst"], e["dpt"]) for e in allowed_entries)
+    # Exclude double-logged entries: iptables LOG is non-terminating, so a packet
+    # logged at priority 2 (OUTBOUND_CONN) also hits priority 999 (OUTBOUND_BLOCKED).
+    # Truly blocked traffic appears in BLOCKED but not in any CONN entry.
+    blocked_entries = [
+        e for e in entries
+        if e["is_blocked"] and (e["dst"], e["dpt"]) not in allowed_dst_ports
+    ]
 
     ts_min = min(e["timestamp"] for e in entries)
     ts_max = max(e["timestamp"] for e in entries)
@@ -368,7 +375,14 @@ def print_anomaly_report(entries, baseline, resolve):
             })
 
     # --- Blocked attempts (something tried to get out and was denied) ---
-    blocked = [e for e in entries if e["is_blocked"]]
+    # Exclude double-logged traffic: same (dst, dpt) in allowed entries means
+    # the connection succeeded — it was just logged twice due to iptables LOG
+    # being non-terminating (priority-2 CONN log + priority-999 BLOCKED log).
+    allowed_dst_ports = set((e["dst"], e["dpt"]) for e in entries if not e["is_blocked"])
+    blocked = [
+        e for e in entries
+        if e["is_blocked"] and (e["dst"], e["dpt"]) not in allowed_dst_ports
+    ]
     if blocked:
         blocked_dsts = Counter((e["dst"], e["dpt"]) for e in blocked)
         for (ip, port), count in blocked_dsts.most_common(20):
