@@ -16,9 +16,6 @@ cd egress-monitor
 # Enable firewall logging
 sudo bash src/setup_outbound_logging.sh
 
-# Verify it's working
-sudo tail -f /var/log/outbound-connections.log
-
 # Wait 1 to 2 days for log data to accumulate
 comeback_date=$(date -d "+2 days" "+%Y-%m-%d")
 echo -e "${YELLOW}Come back on ${comeback_date} to create baseline.${NC}"
