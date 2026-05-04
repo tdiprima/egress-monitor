@@ -8,6 +8,7 @@ rm -rf egress-monitor
 # Uninstall the scripts
 sudo rm /usr/local/bin/outbound_audit.py
 sudo rm /usr/local/bin/outbound_audit_cron.sh
+sudo rm /var/log/outbound-connections.log
 
 git clone https://github.com/tdiprima/egress-monitor.git
 cd egress-monitor
