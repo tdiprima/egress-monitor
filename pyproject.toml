@@ -1,7 +1,17 @@
 [project]
 name = "egress-monitor"
 version = "0.1.0"
-description = "Logging outbound connections"
+description = "Monitor outbound network connections and alert on anomalies"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
+
+[project.scripts]
+outbound-audit = "egress_monitor.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[tool.setuptools.packages.find]
+where = ["src"]

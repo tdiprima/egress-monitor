@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # =============================================================================
 # outbound_audit_cron.sh
 #
@@ -8,66 +8,69 @@
 # - If clean: writes a one-liner to the report file, no email
 #
 # Install:
+#   sudo cp outbound_audit.py /usr/local/bin/outbound_audit.py
 #   sudo cp outbound_audit_cron.sh /usr/local/bin/outbound_audit_cron.sh
 #   sudo chmod +x /usr/local/bin/outbound_audit_cron.sh
-#   sudo crontab -e
-#   # Add:  0 0 * * * /usr/local/bin/outbound_audit_cron.sh
+#   # Add to root crontab:  0 0 * * * EMAIL=you@example.com /usr/local/bin/outbound_audit_cron.sh
 #
 # Prerequisites:
-#   - outbound_audit.py installed somewhere (see AUDIT_SCRIPT below)
+#   - outbound_audit.py installed at AUDIT_SCRIPT
 #   - Baseline already created:
 #       sudo python3 /usr/local/bin/outbound_audit.py --save-baseline /etc/outbound-baseline.json
 #   - mailx or sendmail available for email alerts
+#   - EMAIL environment variable set to the alert recipient
+#
+# Exit codes from outbound_audit.py:
+#   0 = clean
+#   1 = anomalies detected
+#   2 = Ollama outbound activity detected
 # =============================================================================
 
-set -euo pipefail
+set -uo pipefail
 
 # --- Configuration -----------------------------------------------------------
 AUDIT_SCRIPT="/usr/local/bin/outbound_audit.py"
 BASELINE="/etc/outbound-baseline.json"
 LOG_FILE="/var/log/outbound-connections.log"
 REPORT_DIR="/var/log/outbound-audit-reports"
-ALERT_EMAIL="$EMAIL"
-HOSTNAME=$(hostname -s)
+ALERT_EMAIL="${EMAIL:?ERROR: EMAIL environment variable is not set}"
+HOSTNAME=$(hostname --short)
 
 # Python binary — adjust if needed (e.g., /usr/bin/python3.11)
 PYTHON="/usr/bin/python3"
 
 # --- Setup -------------------------------------------------------------------
-mkdir -p "$REPORT_DIR"
+mkdir --parents "${REPORT_DIR}"
 TODAY=$(date +%Y-%m-%d)
 REPORT_FILE="${REPORT_DIR}/audit-${TODAY}.txt"
-YESTERDAY_START=$(date -d "yesterday 00:00" +"%Y-%m-%d %H:%M")
-YESTERDAY_END=$(date -d "yesterday 23:59" +"%Y-%m-%d %H:%M")
+YESTERDAY_START=$(date --date="yesterday 00:00" +"%Y-%m-%d %H:%M")
+YESTERDAY_END=$(date --date="yesterday 23:59" +"%Y-%m-%d %H:%M")
 
 # --- Run the audit -----------------------------------------------------------
-# Analyze yesterday's traffic against the baseline
-# --no-resolve in cron to avoid slow DNS lookups at midnight
-AUDIT_OUTPUT=$($PYTHON "$AUDIT_SCRIPT" \
-    -f "$LOG_FILE" \
-    --baseline "$BASELINE" \
-    --after "$YESTERDAY_START" \
-    --before "$YESTERDAY_END" \
-    --no-resolve \
-    2>&1) || true
+# --no-resolve avoids slow DNS lookups at midnight
+# Capture exit code separately so set -u does not abort on non-zero exit.
+AUDIT_OUTPUT=$(
+    "${PYTHON}" "${AUDIT_SCRIPT}" \
+        --file "${LOG_FILE}" \
+        --baseline "${BASELINE}" \
+        --after "${YESTERDAY_START}" \
+        --before "${YESTERDAY_END}" \
+        --no-resolve \
+        2>/dev/null
+) || AUDIT_EXIT=$?
 
-# --- Check for anomalies ----------------------------------------------------
-# The audit script prints "No anomalies" or "No obvious anomalies" when clean.
-# It prints "Found N anomalies" when there are issues.
-# Also check for OLLAMA MADE (Ollama outbound activity).
-
+# outbound_audit.py exit code contract:
+#   0 = clean, 1 = anomalies, 2 = Ollama outbound
+AUDIT_EXIT="${AUDIT_EXIT:-0}"
 HAS_ANOMALIES=false
-ANOMALY_COUNT=0
 OLLAMA_ALERT=false
 
-if echo "$AUDIT_OUTPUT" | grep -q "Found [0-9]* anomalies"; then
+if [[ "${AUDIT_EXIT}" -ge 1 ]]; then
     HAS_ANOMALIES=true
-    ANOMALY_COUNT=$(echo "$AUDIT_OUTPUT" | grep -oP "Found \K[0-9]+")
 fi
 
-if echo "$AUDIT_OUTPUT" | grep -q "OLLAMA MADE"; then
+if [[ "${AUDIT_EXIT}" -ge 2 ]]; then
     OLLAMA_ALERT=true
-    HAS_ANOMALIES=true
 fi
 
 # --- Write report file (always) ---------------------------------------------
@@ -78,80 +81,70 @@ fi
     echo " Period: ${YESTERDAY_START} → ${YESTERDAY_END}"
     echo "========================================"
     echo ""
-    if [[ "$HAS_ANOMALIES" == true ]]; then
+    if [[ "${HAS_ANOMALIES}" == true ]]; then
         echo " STATUS: ⚠ ANOMALIES DETECTED"
-        echo " Anomaly count: ${ANOMALY_COUNT}"
         echo " Ollama outbound: ${OLLAMA_ALERT}"
     else
         echo " STATUS: ✓ CLEAN — no anomalies"
     fi
     echo ""
-    echo "$AUDIT_OUTPUT"
-} > "$REPORT_FILE"
+    echo "${AUDIT_OUTPUT}"
+} > "${REPORT_FILE}"
 
 # --- Send email alert (only if anomalies found) -----------------------------
-if [[ "$HAS_ANOMALIES" == true ]]; then
+if [[ "${HAS_ANOMALIES}" == true ]]; then
     SUBJECT="[ALERT] ${HOSTNAME}: Outbound connection anomalies detected"
-
-    if [[ "$OLLAMA_ALERT" == true ]]; then
+    if [[ "${OLLAMA_ALERT}" == true ]]; then
         SUBJECT="[CRITICAL] ${HOSTNAME}: Ollama made outbound connections!"
     fi
 
-    # Build email body
-    EMAIL_BODY=$(cat <<-EMAILEOF
+    build_email_body() {
+        cat <<EMAIL_EOF
 Outbound connection anomalies detected on ${HOSTNAME}.
 
 Date:     ${TODAY} (analyzing yesterday's traffic)
 Period:   ${YESTERDAY_START} → ${YESTERDAY_END}
-Anomalies: ${ANOMALY_COUNT}
 Ollama outbound: ${OLLAMA_ALERT}
 
 Full report: ${REPORT_FILE}
 
---- Summary (anomaly section) ---
+--- Audit output ---
 
-$(echo "$AUDIT_OUTPUT" | sed -n '/ANOMALY DETECTION/,/^──────/p')
-
-$(if [[ "$OLLAMA_ALERT" == true ]]; then
-    echo ""
-    echo "--- OLLAMA OUTBOUND ACTIVITY ---"
-    echo ""
-    echo "$AUDIT_OUTPUT" | sed -n '/OLLAMA OUTBOUND ACTIVITY/,/^══════/p'
-fi)
+${AUDIT_OUTPUT}
 
 ---
 This alert was generated by outbound_audit_cron.sh on ${HOSTNAME}.
 Reports are saved to ${REPORT_DIR}/
-To investigate: sudo python3 ${AUDIT_SCRIPT} -f ${LOG_FILE} --after "${YESTERDAY_START}" --before "${YESTERDAY_END}"
-EMAILEOF
-    )
+To investigate: sudo python3 ${AUDIT_SCRIPT} --file ${LOG_FILE} --after "${YESTERDAY_START}" --before "${YESTERDAY_END}"
+EMAIL_EOF
+    }
 
-    # Try mailx first, fall back to sendmail
+    # Try mailx first, fall back to mail, then sendmail
     if command -v mailx &>/dev/null; then
-        echo "$EMAIL_BODY" | mailx -s "$SUBJECT" "$ALERT_EMAIL"
+        build_email_body | mailx -s "${SUBJECT}" "${ALERT_EMAIL}"
     elif command -v mail &>/dev/null; then
-        echo "$EMAIL_BODY" | mail -s "$SUBJECT" "$ALERT_EMAIL"
+        build_email_body | mail -s "${SUBJECT}" "${ALERT_EMAIL}"
     elif command -v sendmail &>/dev/null; then
         {
-            echo "Subject: $SUBJECT"
-            echo "To: $ALERT_EMAIL"
+            echo "Subject: ${SUBJECT}"
+            echo "To: ${ALERT_EMAIL}"
             echo "From: outbound-audit@${HOSTNAME}"
             echo ""
-            echo "$EMAIL_BODY"
-        } | sendmail "$ALERT_EMAIL"
+            build_email_body
+        } | sendmail "${ALERT_EMAIL}"
     else
-        # No mail command available — log a warning
-        echo "[$(date)] WARNING: Anomalies found but no mail command available. See ${REPORT_FILE}" \
+        # No mail command available — log a warning so the failure is not silent
+        echo "[$(date --iso-8601=seconds)] WARNING: Anomalies found but no mail command available. See ${REPORT_FILE}" \
             >> "${REPORT_DIR}/mail-failures.log"
     fi
 fi
 
 # --- Clean up old reports (keep 90 days) -------------------------------------
-find "$REPORT_DIR" -name "audit-*.txt" -mtime +90 -delete 2>/dev/null || true
+find "${REPORT_DIR}" -name "audit-*.txt" -mtime +90 -delete 2>/dev/null || true
 
 # --- Log the run to syslog ---------------------------------------------------
-if [[ "$HAS_ANOMALIES" == true ]]; then
-    logger -t outbound-audit "Anomalies detected (${ANOMALY_COUNT}). Ollama: ${OLLAMA_ALERT}. Report: ${REPORT_FILE}"
+if [[ "${HAS_ANOMALIES}" == true ]]; then
+    logger -t outbound-audit "Anomalies detected. Ollama: ${OLLAMA_ALERT}. Report: ${REPORT_FILE}"
 else
     logger -t outbound-audit "Clean run. Report: ${REPORT_FILE}"
 fi
